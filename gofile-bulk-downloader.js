@@ -1,16 +1,15 @@
 // ==UserScript==
 // @name         Gofile Bulk Downloader
 // @namespace    https://github.com/xmtaha
-// @version      2.1
+// @version      2.2
 // @description  Download all files from Gofile automatically by clicking download buttons
 // @author       xmtaha
 // @match        https://gofile.io/*
 // @match        https://*.gofile.io/*
 // @match        http://gofile.io/*
 // @match        http://*.gofile.io/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_notification
+// @run-at       document-idle
+// @grant        none
 // ==/UserScript==
 
 (function() {
@@ -110,86 +109,90 @@
         downloadBtn.onclick = startBulkDownload;
         
         container.appendChild(downloadBtn);
-        
         return container;
     }
 
-    function findDownloadButtons() {
-        const buttons = [];
+    function findDownloadItems() {
+        const items = [];
 
-        // 1. Modern Gofile UI (Tailwind CSS + Lucide Icons)
-        // File rows inside folder view
-        const fileRows = document.querySelectorAll('.fm-row[data-type="file"]');
-        if (fileRows.length > 0) {
-            fileRows.forEach((row, index) => {
-                const btn = row.querySelector('button[data-action="download"]');
-                if (btn) {
-                    const nameEl = row.querySelector('p.truncate') || 
-                                   row.querySelector('[data-action="open-file"] p') || 
-                                   row.querySelector('[data-action="open-file"]');
-                    const fileName = nameEl?.textContent?.trim() || getFileNameFromContext(btn) || `file_${index + 1}`;
-                    
-                    buttons.push({
-                        element: btn,
-                        name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
-                        visible: true
-                    });
-                }
-            });
-            if (buttons.length > 0) return buttons;
-        }
+        // 1. Modern Gofile UI: search by file rows (.fm-row)
+        const rows = document.querySelectorAll('.fm-row');
+        if (rows.length > 0) {
+            rows.forEach((row, index) => {
+                // Skip sub-folders to prevent "Download as ZIP / Premium required" prompts
+                if (row.getAttribute('data-type') === 'folder') return;
 
-        // 2. Modern Gofile UI: Any row that is not explicitly marked as a folder
-        const genericRows = document.querySelectorAll('.fm-row:not([data-type="folder"])');
-        if (genericRows.length > 0) {
-            genericRows.forEach((row, index) => {
-                const btn = row.querySelector('button[data-action="download"]');
-                if (btn && btn.getAttribute('title') !== 'Download as ZIP') {
-                    const nameEl = row.querySelector('p.truncate') || 
-                                   row.querySelector('[data-action="open-file"]');
-                    const fileName = nameEl?.textContent?.trim() || `file_${index + 1}`;
-                    
-                    buttons.push({
-                        element: btn,
-                        name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
-                        visible: true
-                    });
-                }
-            });
-            if (buttons.length > 0) return buttons;
-        }
-
-        // 3. Modern Gofile UI: Single File View (/d/:contentId where content is 1 file)
-        const singleFileBtn = document.querySelector('#fm-root button[data-action="download"], button[data-action="download"]');
-        if (singleFileBtn && !singleFileBtn.closest('.fm-row')) {
-            const titleEl = document.querySelector('h1') || document.querySelector('.truncate');
-            const fileName = titleEl?.textContent?.trim() || document.title || 'downloaded_file';
-            buttons.push({
-                element: singleFileBtn,
-                name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
-                visible: true
-            });
-            return buttons;
-        }
-
-        // 4. Legacy Gofile UI fallback (FontAwesome and .item_download)
-        const legacyBtns = document.querySelectorAll('button.item_download');
-        legacyBtns.forEach((btn, index) => {
-            const isVisible = btn.offsetWidth > 0 && btn.offsetHeight > 0;
-            const hasIcon = btn.querySelector('i.fas.fa-download') || btn.querySelector('[data-lucide="download"]');
-            
-            if (isVisible || hasIcon) {
-                const fileName = getFileNameFromContext(btn) || `file_${index + 1}`;
+                const nameEl = row.querySelector('p.truncate') || 
+                               row.querySelector('[data-action="open-file"] p') || 
+                               row.querySelector('[data-action="open-file"]') ||
+                               row.querySelector('p');
+                const fileName = nameEl?.textContent?.trim() || `file_${index + 1}`;
                 
-                buttons.push({
+                const btn = row.querySelector('button[data-action="download"]');
+                
+                items.push({
+                    row: row,
                     element: btn,
                     name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
-                    visible: true
+                    download: function() {
+                        const targetBtn = this.element || this.row.querySelector('button[data-action="download"]');
+                        if (targetBtn) {
+                            targetBtn.click();
+                        } else if (this.row) {
+                            // If Gofile hid or didn't render the inline button, trigger download via row event delegation
+                            const tempBtn = document.createElement('button');
+                            tempBtn.setAttribute('data-action', 'download');
+                            tempBtn.style.display = 'none';
+                            this.row.appendChild(tempBtn);
+                            tempBtn.click();
+                            tempBtn.remove();
+                        }
+                    }
                 });
+            });
+
+            if (items.length > 0) {
+                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via .fm-row`);
+                return items;
             }
-        });
-        
-        return buttons;
+        }
+
+        // 2. Modern Gofile UI: search direct download buttons on page (Single file or other layout)
+        const actionBtns = document.querySelectorAll('button[data-action="download"], a[data-action="download"]');
+        if (actionBtns.length > 0) {
+            actionBtns.forEach((btn, index) => {
+                if (btn.getAttribute('title')?.includes('ZIP')) return;
+                const fileName = getFileNameFromContext(btn) || `file_${index + 1}`;
+                items.push({
+                    element: btn,
+                    name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
+                    download: function() { this.element.click(); }
+                });
+            });
+            if (items.length > 0) {
+                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via data-action="download"`);
+                return items;
+            }
+        }
+
+        // 3. Fallback: Legacy Gofile UI (FontAwesome or .item_download)
+        const legacyBtns = document.querySelectorAll('button.item_download, a.item_download');
+        if (legacyBtns.length > 0) {
+            legacyBtns.forEach((btn, index) => {
+                const fileName = getFileNameFromContext(btn) || `file_${index + 1}`;
+                items.push({
+                    element: btn,
+                    name: fileName.replace(/[<>:"/\\|?*]/g, '_').trim(),
+                    download: function() { this.element.click(); }
+                });
+            });
+            if (items.length > 0) {
+                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via .item_download`);
+                return items;
+            }
+        }
+
+        return items;
     }
 
     function getFileNameFromContext(element) {
@@ -197,56 +200,17 @@
             () => element.getAttribute('data-filename'),
             () => element.getAttribute('title'),
             () => element.getAttribute('alt'),
-            
             () => {
                 const parent = element.closest('.fm-row, tr, .file-row, .file-item, .content-item');
                 if (parent) {
                     const firstCell = parent.querySelector('p.truncate, td:first-child, .file-name, .filename, .name');
-                    if (firstCell) {
-                        return firstCell.textContent?.trim();
-                    }
+                    if (firstCell) return firstCell.textContent?.trim();
                 }
                 return null;
             },
-            
-            () => {
-                let sibling = element.parentElement?.firstElementChild;
-                while (sibling) {
-                    if (sibling !== element) {
-                        const text = sibling.textContent?.trim();
-                        if (text && text.length > 3 && 
-                            !text.toLowerCase().includes('download') &&
-                            !text.toLowerCase().includes('size') &&
-                            !text.toLowerCase().includes('date')) {
-                            return text;
-                        }
-                    }
-                    sibling = sibling.nextElementSibling;
-                }
-                return null;
-            },
-            
-            () => {
-                let prev = element.previousElementSibling;
-                let attempts = 0;
-                while (prev && attempts < 5) {
-                    const text = prev.textContent?.trim();
-                    if (text && text.length > 2 && 
-                        !text.toLowerCase().includes('download') &&
-                        !text.toLowerCase().includes('button')) {
-                        return text;
-                    }
-                    prev = prev.previousElementSibling;
-                    attempts++;
-                }
-                return null;
-            },
-            
             () => {
                 const text = element.textContent?.trim();
-                if (text && text !== 'Download' && text.length > 2) {
-                    return text;
-                }
+                if (text && text !== 'Download' && text.length > 2) return text;
                 return null;
             }
         ];
@@ -254,9 +218,7 @@
         for (let i = 0; i < sources.length; i++) {
             try {
                 const result = sources[i]();
-                if (result && result.length > 2) {
-                    return result;
-                }
+                if (result && result.length > 2) return result;
             } catch (e) {
                 continue;
             }
@@ -268,16 +230,16 @@
     async function startBulkDownload() {
         if (isDownloading) return;
         
-        const downloadButtons = findDownloadButtons();
+        const downloadItems = findDownloadItems();
         
-        if (downloadButtons.length === 0) {
+        if (downloadItems.length === 0) {
             alert('No downloadable files found on this page!\n\nPlease wait for the page to fully load.');
             return;
         }
 
-        const message = `${downloadButtons.length} files found.\n\n` +
-                       `⚠️ IMPORTANT: This script will click the download button for each file.\n` +
-                       `Your browser may request download confirmation for each file.\n\n` +
+        const message = `${downloadItems.length} files found.\n\n` +
+                       `⚠️ IMPORTANT: This script will download each file automatically.\n` +
+                       `Your browser may request confirmation for multiple downloads.\n\n` +
                        `Do you want to continue?`;
 
         if (!confirm(message)) {
@@ -299,13 +261,14 @@
             z-index: 999999;
             text-align: center;
             font-family: Arial, sans-serif;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
         `;
         progressDiv.innerHTML = `
-            <h3>🔄 Downloading Files</h3>
-            <p id="clickProgress">0 / ${downloadButtons.length} buttons clicked</p>
-            <p><small>Browser confirmation may be required for each file</small></p>
+            <h3 style="margin: 0 0 15px 0;">🔄 Downloading Files</h3>
+            <p id="clickProgress" style="margin: 5px 0; font-size: 15px;">0 / ${downloadItems.length} files started</p>
+            <p style="color: #aaa; font-size: 12px; margin-top: 10px;">Browser confirmation may be required for multiple downloads</p>
             <button onclick="this.parentElement.remove(); window.cancelBulkDownload = true;" 
-                    style="background: #ff4444; color: white; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 15px; cursor: pointer;">
+                    style="background: #ff4444; color: white; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 15px; cursor: pointer; font-weight: bold;">
                 Cancel
             </button>
         `;
@@ -315,22 +278,21 @@
         let clickedCount = 0;
         
         try {
-            for (let i = 0; i < downloadButtons.length; i++) {
+            for (let i = 0; i < downloadItems.length; i++) {
                 if (window.cancelBulkDownload) break;
                 
-                const button = downloadButtons[i];
+                const item = downloadItems[i];
                 
                 const progressText = document.getElementById('clickProgress');
                 if (progressText) {
-                    progressText.textContent = `${i + 1} / ${downloadButtons.length} buttons clicked - ${button.name}`;
+                    progressText.textContent = `${i + 1} / ${downloadItems.length} files started - ${item.name}`;
                 }
                 
                 try {
-                    button.element.focus?.();
-                    button.element.click();
+                    item.download();
                     clickedCount++;
                 } catch (error) {
-                    console.error('Error clicking download button:', error);
+                    console.error('Error triggering download for:', item.name, error);
                     continue;
                 }
                 
@@ -341,11 +303,11 @@
                 const finalMessage = document.createElement('div');
                 finalMessage.style.cssText = progressDiv.style.cssText;
                 finalMessage.innerHTML = `
-                    <h3>✅ Process Completed!</h3>
-                    <p>${clickedCount} download buttons clicked</p>
-                    <p><small>Files should be in your Downloads folder</small></p>
+                    <h3 style="margin: 0 0 10px 0;">✅ Process Completed!</h3>
+                    <p style="font-size: 15px;">${clickedCount} files triggered for download</p>
+                    <p style="color: #aaa; font-size: 12px;">Check your browser's Downloads folder</p>
                     <button onclick="this.parentElement.remove()" 
-                            style="background: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 15px; cursor: pointer;">
+                            style="background: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 15px; cursor: pointer; font-weight: bold;">
                         Close
                     </button>
                 `;
@@ -363,7 +325,6 @@
             alert('An error occurred during download: ' + error.message);
         } finally {
             isDownloading = false;
-            
             if (progressDiv && progressDiv.parentElement) {
                 progressDiv.remove();
             }
@@ -371,41 +332,29 @@
     }
 
     function updateFileCount() {
-        const buttons = findDownloadButtons();
+        const items = findDownloadItems();
         const countElement = document.getElementById('fileCount');
         if (countElement) {
-            countElement.textContent = buttons.length > 0 ? ` (${buttons.length})` : '';
+            countElement.textContent = items.length > 0 ? ` (${items.length})` : '';
         }
     }
 
     function initialize() {
         injectStyles();
         
-        const checkForContent = () => {
-            if (document.querySelector('.gofile-bulk-container')) {
-                updateFileCount();
-                return;
+        const attachButton = () => {
+            if (!document.querySelector('.gofile-bulk-container')) {
+                const isGofilePage = window.location.hostname.includes('gofile.io');
+                if (isGofilePage) {
+                    const container = createMainContainer();
+                    document.body.appendChild(container);
+                }
             }
-            
-            const isGofilePage = window.location.hostname.includes('gofile.io');
-            
-            if (isGofilePage) {
-                const container = createMainContainer();
-                document.body.appendChild(container);
-                
-                updateFileCount();
-                
-                setTimeout(() => {
-                    updateFileCount();
-                }, 2000);
-            }
+            updateFileCount();
         };
 
         const observer = new MutationObserver(() => {
-            setTimeout(() => {
-                checkForContent();
-                updateFileCount();
-            }, 500);
+            updateFileCount();
         });
 
         observer.observe(document.body, {
@@ -413,10 +362,11 @@
             subtree: true
         });
 
-        setTimeout(checkForContent, 1000);
-        setTimeout(checkForContent, 3000);
-        setTimeout(checkForContent, 5000);
-        setInterval(checkForContent, 10000);
+        attachButton();
+        setTimeout(attachButton, 1000);
+        setTimeout(attachButton, 2000);
+        setTimeout(attachButton, 4000);
+        setInterval(updateFileCount, 3000);
     }
 
     if (document.readyState === 'loading') {
