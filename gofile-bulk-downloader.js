@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gofile Bulk Downloader
 // @namespace    https://github.com/xmtaha
-// @version      2.2
+// @version      2.3
 // @description  Download all files from Gofile automatically by clicking download buttons
 // @author       xmtaha
 // @match        https://gofile.io/*
@@ -21,6 +21,7 @@
     };
 
     let isDownloading = false;
+    let lastFoundCount = -1;
 
     const styles = `
         .gofile-bulk-container {
@@ -119,7 +120,7 @@
         const rows = document.querySelectorAll('.fm-row');
         if (rows.length > 0) {
             rows.forEach((row, index) => {
-                // Skip sub-folders to prevent "Download as ZIP / Premium required" prompts
+                // Skip folders
                 if (row.getAttribute('data-type') === 'folder') return;
 
                 const nameEl = row.querySelector('p.truncate') || 
@@ -139,7 +140,6 @@
                         if (targetBtn) {
                             targetBtn.click();
                         } else if (this.row) {
-                            // If Gofile hid or didn't render the inline button, trigger download via row event delegation
                             const tempBtn = document.createElement('button');
                             tempBtn.setAttribute('data-action', 'download');
                             tempBtn.style.display = 'none';
@@ -151,13 +151,10 @@
                 });
             });
 
-            if (items.length > 0) {
-                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via .fm-row`);
-                return items;
-            }
+            if (items.length > 0) return items;
         }
 
-        // 2. Modern Gofile UI: search direct download buttons on page (Single file or other layout)
+        // 2. Modern Gofile UI: direct download buttons
         const actionBtns = document.querySelectorAll('button[data-action="download"], a[data-action="download"]');
         if (actionBtns.length > 0) {
             actionBtns.forEach((btn, index) => {
@@ -169,13 +166,10 @@
                     download: function() { this.element.click(); }
                 });
             });
-            if (items.length > 0) {
-                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via data-action="download"`);
-                return items;
-            }
+            if (items.length > 0) return items;
         }
 
-        // 3. Fallback: Legacy Gofile UI (FontAwesome or .item_download)
+        // 3. Fallback: Legacy Gofile UI
         const legacyBtns = document.querySelectorAll('button.item_download, a.item_download');
         if (legacyBtns.length > 0) {
             legacyBtns.forEach((btn, index) => {
@@ -186,10 +180,7 @@
                     download: function() { this.element.click(); }
                 });
             });
-            if (items.length > 0) {
-                console.log(`[Gofile Bulk Downloader] Found ${items.length} files via .item_download`);
-                return items;
-            }
+            if (items.length > 0) return items;
         }
 
         return items;
@@ -332,7 +323,12 @@
     }
 
     function updateFileCount() {
+        if (isDownloading) return;
+        
         const items = findDownloadItems();
+        if (items.length === lastFoundCount) return; // Only update DOM if count actually changed!
+        lastFoundCount = items.length;
+
         const countElement = document.getElementById('fileCount');
         if (countElement) {
             countElement.textContent = items.length > 0 ? ` (${items.length})` : '';
@@ -353,8 +349,18 @@
             updateFileCount();
         };
 
-        const observer = new MutationObserver(() => {
-            updateFileCount();
+        // Throttled observer to prevent high CPU / infinite mutation loops
+        let debounceTimer = null;
+        const observer = new MutationObserver((mutations) => {
+            // Ignore mutations caused by our own container
+            const isSelf = mutations.every(m => m.target && m.target.closest && m.target.closest('.gofile-bulk-container'));
+            if (isSelf) return;
+
+            if (debounceTimer) return;
+            debounceTimer = setTimeout(() => {
+                debounceTimer = null;
+                updateFileCount();
+            }, 500);
         });
 
         observer.observe(document.body, {
@@ -365,8 +371,6 @@
         attachButton();
         setTimeout(attachButton, 1000);
         setTimeout(attachButton, 2000);
-        setTimeout(attachButton, 4000);
-        setInterval(updateFileCount, 3000);
     }
 
     if (document.readyState === 'loading') {
